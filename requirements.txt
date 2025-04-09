@@ -4,3 +4,4 @@ pandas
 altair
 wordcloud
 matplotlib
+textblob

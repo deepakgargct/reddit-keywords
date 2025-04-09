@@ -1,153 +1,92 @@
 import streamlit as st
-import praw
 import pandas as pd
-from datetime import datetime, timedelta
-import altair as alt
-from wordcloud import WordCloud
-import matplotlib.pyplot as plt
+import praw
 import re
 from textblob import TextBlob
+import altair as alt
 
-# === Reddit API Setup ===
+# Initialize PRAW
 reddit = praw.Reddit(
-    client_id=st.secrets["client_id"],
-    client_secret=st.secrets["client_secret"],
-    user_agent=st.secrets["user_agent"]
+    client_id=st.secrets["REDDIT_CLIENT_ID"],
+    client_secret=st.secrets["REDDIT_CLIENT_SECRET"],
+    user_agent="reddit-scraper-app"
 )
-reddit.read_only = True
 
-# === Timeframe Mapping ===
-time_mapping = {
-    "1 Month": 30,
-    "3 Months": 90,
-    "6 Months": 180,
-    "12 Months": 365
-}
-
-# === Helper Functions ===
-def is_internal_link(post):
-    return (not post.is_self and 'reddit.com' in post.url) or post.is_self
+def clean_text(text):
+    text = re.sub(r'http\S+', '', text)
+    return text.strip()
 
 def analyze_sentiment(text):
-    analysis = TextBlob(text)
-    polarity = analysis.sentiment.polarity
-    if polarity > 0.05:
+    blob = TextBlob(text)
+    polarity = blob.sentiment.polarity
+    if polarity > 0.1:
         return "Positive"
-    elif polarity < -0.05:
+    elif polarity < -0.1:
         return "Negative"
     else:
         return "Neutral"
 
-def get_reddit_posts(keyword, days, subreddits=None):
+def get_reddit_posts(keyword, time_filter="month", subreddits=None):
     posts = []
-    end_date = datetime.utcnow()
-    start_date = end_date - timedelta(days=days)
+    search_subreddits = subreddits if subreddits else ["all"]
+    for sub in search_subreddits:
+        subreddit = reddit.subreddit(sub)
+        for submission in subreddit.search(keyword, sort="top", limit=200, time_filter=time_filter):
+            if not submission.is_self:
+                continue  # Skip external links
+            posts.append({
+                "Title": submission.title,
+                "Subreddit": submission.subreddit.display_name,
+                "Score": submission.score,
+                "Comments": submission.num_comments,
+                "Created": pd.to_datetime(submission.created_utc, unit='s'),
+                "Text": clean_text(submission.selftext),
+                "Link": f"https://reddit.com{submission.permalink}"
+            })
+    return pd.DataFrame(posts)
 
-    subreddits = subreddits or ["all"]
-    for sub in subreddits:
-        query = f'title:"{keyword}"'
-        try:
-            search_results = reddit.subreddit(sub).search(query, sort="top", limit=200, time_filter="year")
-            for submission in search_results:
-                created = datetime.utcfromtimestamp(submission.created_utc)
-                if start_date <= created <= end_date and is_internal_link(submission):
-                    title_lower = submission.title.lower()
-                    if keyword.lower() in title_lower:
-                        posts.append({
-                            "Title": submission.title,
-                            "Score": submission.score,
-                            "Upvote Ratio": submission.upvote_ratio,
-                            "Comments": submission.num_comments,
-                            "Subreddit": submission.subreddit.display_name,
-                            "Permalink": f"https://reddit.com{submission.permalink}",
-                            "Created": created.date(),
-                            "Sentiment": analyze_sentiment(submission.title)
-                        })
-                if len(posts) >= 100:
-                    break
-        except Exception as e:
-            st.warning(f"Error searching r/{sub}: {e}")
-    return posts[:100]
+# Streamlit UI
+st.title("Reddit Keyword Scraper with Sentiment Analysis")
 
-def generate_wordcloud(titles):
-    text = ' '.join(titles)
-    text = re.sub(r"http\S+|[^A-Za-z\s]", "", text)
-    wordcloud = WordCloud(width=800, height=400, background_color='white').generate(text)
-    return wordcloud
+keyword = st.text_input("Enter a keyword to search:")
+timeframe = st.selectbox("Select a time frame:", ["1 Month", "3 Months", "6 Months", "12 Months"])
+subreddits_input = st.text_input("Optional: Enter up to 5 subreddits (comma-separated)")
 
-# === Streamlit UI ===
-st.set_page_config(page_title="Reddit Topic Explorer", layout="wide")
-st.title("🔍 Reddit Topic Explorer")
+# Map timeframe to praw-compatible strings
+time_mapping = {
+    "1 Month": "month",
+    "3 Months": "3month",
+    "6 Months": "6month",
+    "12 Months": "year"
+}
 
-col1, col2 = st.columns(2)
-with col1:
-    keyword = st.text_input("Enter a keyword to search Reddit")
-with col2:
-    timeframe = st.selectbox("Select timeframe", options=list(time_mapping.keys()))
+if st.button("Scrape Reddit Posts") and keyword:
+    selected_subreddits = [s.strip() for s in subreddits_input.split(',') if s.strip()][:5] if subreddits_input else None
+    with st.spinner("Scraping Reddit..."):
+        df = get_reddit_posts(keyword, time_mapping[timeframe], selected_subreddits)
 
-subreddit_input = st.text_input("Optional: Enter up to 5 subreddits (comma-separated, e.g. gaming,technology)")
-subreddits = [s.strip() for s in subreddit_input.split(",") if s.strip()]
-if len(subreddits) > 5:
-    st.warning("Please limit to 5 subreddits.")
-    subreddits = subreddits[:5]
+    if df.empty:
+        st.warning("No posts found. Try different keywords or subreddits.")
+    else:
+        df["Sentiment"] = df["Title"].apply(analyze_sentiment)
 
-if st.button("Fetch Posts") and keyword:
-    with st.spinner("Fetching top Reddit posts..."):
-        posts_data = get_reddit_posts(keyword, time_mapping[timeframe], subreddits if subreddits else None)
-        if posts_data:
-            df = pd.DataFrame(posts_data)
+        st.subheader("Top Posts")
+        st.dataframe(df.sort_values(by="Score", ascending=False).reset_index(drop=True))
 
-            # === Subreddit Filter ===
-            subreddits = df["Subreddit"].unique().tolist()
-            selected_subs = st.multiselect("Filter by Subreddit", subreddits, default=subreddits)
-            df = df[df["Subreddit"].isin(selected_subs)]
+        st.subheader("Sentiment Analysis")
+        sentiment_counts = df["Sentiment"].value_counts().reset_index()
+        sentiment_counts.columns = ["Sentiment", "Count"]
 
-            # === Sorting ===
-            sort_by = st.selectbox("Sort by", options=["Score", "Comments"])
-            df = df.sort_values(by=sort_by, ascending=False)
-
-            # === Display Data ===
-            st.success(f"Found {len(df)} Reddit posts.")
-            st.dataframe(df, use_container_width=True)
-
-            # === Download CSV ===
-            csv = df.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download CSV", data=csv, file_name=f"{keyword}_reddit_posts.csv", mime='text/csv')
-
-            # === Bar Chart ===
-            st.markdown("### 📊 Post Activity Over Time")
-            chart = (
-                alt.Chart(df)
-                .mark_bar()
-                .encode(
-                    x=alt.X("Created:T", title="Date"),
-                    y=alt.Y("count()", title="Number of Posts"),
-                    tooltip=["Created", "count()"]
-                )
-                .properties(width="container")
+        sentiment_chart = (
+            alt.Chart(sentiment_counts)
+            .mark_bar()
+            .encode(
+                x=alt.X("Sentiment:N", title="Sentiment"),
+                y=alt.Y("Count:Q", title="Number of Posts"),
+                tooltip=["Sentiment", "Count"]
             )
-            st.altair_chart(chart, use_container_width=True)
+            .properties(width="container")
+        )
+        st.altair_chart(sentiment_chart, use_container_width=True)
 
-            # === Sentiment Breakdown ===
-            st.markdown("### 😊 Sentiment Analysis")
-            sentiment_counts = df["Sentiment"].value_counts().reset_index()
-            sentiment_chart = (
-                alt.Chart(sentiment_counts)
-                .mark_bar()
-                .encode(
-                    x=alt.X("index:N", title="Sentiment"),
-                    y=alt.Y("Sentiment:Q", title="Number of Posts"),
-                    tooltip=["index", "Sentiment"]
-                )
-            )
-            st.altair_chart(sentiment_chart, use_container_width=True)
-
-            # === Word Cloud ===
-            st.markdown("### ☁️ Word Cloud from Post Titles")
-            wordcloud = generate_wordcloud(df["Title"].tolist())
-            fig, ax = plt.subplots(figsize=(12, 6))
-            ax.imshow(wordcloud, interpolation='bilinear')
-            ax.axis("off")
-            st.pyplot(fig)
-        else:
-            st.warning("No posts found. Try a different keyword or timeframe.")
+        st.download_button("Download CSV", df.to_csv(index=False), "reddit_posts.csv", "text/csv")

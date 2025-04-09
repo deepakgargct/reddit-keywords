@@ -6,8 +6,9 @@ import altair as alt
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 import re
+from textblob import TextBlob
 
-# === Reddit API Setup using st.secrets ===
+# === Reddit API Setup ===
 reddit = praw.Reddit(
     client_id=st.secrets["client_id"],
     client_secret=st.secrets["client_secret"],
@@ -27,35 +28,50 @@ time_mapping = {
 def is_internal_link(post):
     return (not post.is_self and 'reddit.com' in post.url) or post.is_self
 
-def get_reddit_posts(keyword, days):
+def analyze_sentiment(text):
+    analysis = TextBlob(text)
+    polarity = analysis.sentiment.polarity
+    if polarity > 0.05:
+        return "Positive"
+    elif polarity < -0.05:
+        return "Negative"
+    else:
+        return "Neutral"
+
+def get_reddit_posts(keyword, days, subreddits=None):
     posts = []
     end_date = datetime.utcnow()
     start_date = end_date - timedelta(days=days)
 
-    query = f'title:"{keyword}"'
-    search_results = reddit.subreddit("all").search(query, sort="top", limit=300, time_filter="year")
-
-    for submission in search_results:
-        created = datetime.utcfromtimestamp(submission.created_utc)
-        if start_date <= created <= end_date and is_internal_link(submission):
-            title_lower = submission.title.lower()
-            if keyword.lower() in title_lower:
-                posts.append({
-                    "Title": submission.title,
-                    "Score": submission.score,
-                    "Upvote Ratio": submission.upvote_ratio,
-                    "Comments": submission.num_comments,
-                    "Subreddit": submission.subreddit.display_name,
-                    "Permalink": f"https://reddit.com{submission.permalink}",
-                    "Created": created.date()
-                })
-        if len(posts) >= 100:
-            break
-    return posts
+    subreddits = subreddits or ["all"]
+    for sub in subreddits:
+        query = f'title:"{keyword}"'
+        try:
+            search_results = reddit.subreddit(sub).search(query, sort="top", limit=200, time_filter="year")
+            for submission in search_results:
+                created = datetime.utcfromtimestamp(submission.created_utc)
+                if start_date <= created <= end_date and is_internal_link(submission):
+                    title_lower = submission.title.lower()
+                    if keyword.lower() in title_lower:
+                        posts.append({
+                            "Title": submission.title,
+                            "Score": submission.score,
+                            "Upvote Ratio": submission.upvote_ratio,
+                            "Comments": submission.num_comments,
+                            "Subreddit": submission.subreddit.display_name,
+                            "Permalink": f"https://reddit.com{submission.permalink}",
+                            "Created": created.date(),
+                            "Sentiment": analyze_sentiment(submission.title)
+                        })
+                if len(posts) >= 100:
+                    break
+        except Exception as e:
+            st.warning(f"Error searching r/{sub}: {e}")
+    return posts[:100]
 
 def generate_wordcloud(titles):
     text = ' '.join(titles)
-    text = re.sub(r"http\S+|[^A-Za-z\s]", "", text)  # Clean links and special chars
+    text = re.sub(r"http\S+|[^A-Za-z\s]", "", text)
     wordcloud = WordCloud(width=800, height=400, background_color='white').generate(text)
     return wordcloud
 
@@ -69,9 +85,15 @@ with col1:
 with col2:
     timeframe = st.selectbox("Select timeframe", options=list(time_mapping.keys()))
 
+subreddit_input = st.text_input("Optional: Enter up to 5 subreddits (comma-separated, e.g. gaming,technology)")
+subreddits = [s.strip() for s in subreddit_input.split(",") if s.strip()]
+if len(subreddits) > 5:
+    st.warning("Please limit to 5 subreddits.")
+    subreddits = subreddits[:5]
+
 if st.button("Fetch Posts") and keyword:
     with st.spinner("Fetching top Reddit posts..."):
-        posts_data = get_reddit_posts(keyword, time_mapping[timeframe])
+        posts_data = get_reddit_posts(keyword, time_mapping[timeframe], subreddits if subreddits else None)
         if posts_data:
             df = pd.DataFrame(posts_data)
 
@@ -88,7 +110,7 @@ if st.button("Fetch Posts") and keyword:
             st.success(f"Found {len(df)} Reddit posts.")
             st.dataframe(df, use_container_width=True)
 
-            # === CSV Download ===
+            # === Download CSV ===
             csv = df.to_csv(index=False).encode('utf-8')
             st.download_button("📥 Download CSV", data=csv, file_name=f"{keyword}_reddit_posts.csv", mime='text/csv')
 
@@ -106,6 +128,20 @@ if st.button("Fetch Posts") and keyword:
             )
             st.altair_chart(chart, use_container_width=True)
 
+            # === Sentiment Breakdown ===
+            st.markdown("### 😊 Sentiment Analysis")
+            sentiment_counts = df["Sentiment"].value_counts().reset_index()
+            sentiment_chart = (
+                alt.Chart(sentiment_counts)
+                .mark_bar()
+                .encode(
+                    x=alt.X("index:N", title="Sentiment"),
+                    y=alt.Y("Sentiment:Q", title="Number of Posts"),
+                    tooltip=["index", "Sentiment"]
+                )
+            )
+            st.altair_chart(sentiment_chart, use_container_width=True)
+
             # === Word Cloud ===
             st.markdown("### ☁️ Word Cloud from Post Titles")
             wordcloud = generate_wordcloud(df["Title"].tolist())
@@ -114,4 +150,4 @@ if st.button("Fetch Posts") and keyword:
             ax.axis("off")
             st.pyplot(fig)
         else:
-            st.warning("No posts found. Try another keyword or time frame.")
+            st.warning("No posts found. Try a different keyword or timeframe.")

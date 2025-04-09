@@ -55,8 +55,8 @@ subreddits_input = st.text_input("Optional: Enter up to 5 subreddits (comma-sepa
 # Map timeframe to praw-compatible strings
 time_mapping = {
     "1 Month": "month",
-    "3 Months": "3month",
-    "6 Months": "6month",
+    "3 Months": "year",
+    "6 Months": "year",
     "12 Months": "year"
 }
 

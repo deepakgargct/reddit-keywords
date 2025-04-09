@@ -32,18 +32,23 @@ def get_reddit_posts(keyword, days):
     end_date = datetime.utcnow()
     start_date = end_date - timedelta(days=days)
 
-    for submission in reddit.subreddit("all").search(keyword, sort="top", limit=300, time_filter="year"):
+    query = f'title:"{keyword}"'
+    search_results = reddit.subreddit("all").search(query, sort="top", limit=300, time_filter="year")
+
+    for submission in search_results:
         created = datetime.utcfromtimestamp(submission.created_utc)
         if start_date <= created <= end_date and is_internal_link(submission):
-            posts.append({
-                "Title": submission.title,
-                "Score": submission.score,
-                "Upvote Ratio": submission.upvote_ratio,
-                "Comments": submission.num_comments,
-                "Subreddit": submission.subreddit.display_name,
-                "Permalink": f"https://reddit.com{submission.permalink}",
-                "Created": created.date()
-            })
+            title_lower = submission.title.lower()
+            if keyword.lower() in title_lower:
+                posts.append({
+                    "Title": submission.title,
+                    "Score": submission.score,
+                    "Upvote Ratio": submission.upvote_ratio,
+                    "Comments": submission.num_comments,
+                    "Subreddit": submission.subreddit.display_name,
+                    "Permalink": f"https://reddit.com{submission.permalink}",
+                    "Created": created.date()
+                })
         if len(posts) >= 100:
             break
     return posts

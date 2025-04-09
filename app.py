@@ -5,15 +5,15 @@ from datetime import datetime, timedelta
 import altair as alt
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
-from collections import Counter
 import re
 
-# === Reddit API Setup ===
+# === Reddit API Setup using st.secrets ===
 reddit = praw.Reddit(
-    client_id="YOUR_CLIENT_ID",
-    client_secret="YOUR_CLIENT_SECRET",
-    user_agent="reddit_scraper_app"
+    client_id=st.secrets["client_id"],
+    client_secret=st.secrets["client_secret"],
+    user_agent=st.secrets["user_agent"]
 )
+reddit.read_only = True
 
 # === Timeframe Mapping ===
 time_mapping = {

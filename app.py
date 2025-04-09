@@ -27,30 +27,35 @@ time_mapping = {
 def is_internal_link(post):
     return (not post.is_self and 'reddit.com' in post.url) or post.is_self
 
-def get_reddit_posts(keyword, days):
+def get_reddit_posts(keyword, days, subreddits=None):
     posts = []
     end_date = datetime.utcnow()
     start_date = end_date - timedelta(days=days)
-
     query = f'title:"{keyword}"'
-    search_results = reddit.subreddit("all").search(query, sort="top", limit=300, time_filter="year")
 
-    for submission in search_results:
-        created = datetime.utcfromtimestamp(submission.created_utc)
-        if start_date <= created <= end_date and is_internal_link(submission):
-            title_lower = submission.title.lower()
-            if keyword.lower() in title_lower:
-                posts.append({
-                    "Title": submission.title,
-                    "Score": submission.score,
-                    "Upvote Ratio": submission.upvote_ratio,
-                    "Comments": submission.num_comments,
-                    "Subreddit": submission.subreddit.display_name,
-                    "Permalink": f"https://reddit.com{submission.permalink}",
-                    "Created": created.date()
-                })
-        if len(posts) >= 100:
-            break
+    target_subreddits = subreddits if subreddits else ["all"]
+
+    for sub in target_subreddits:
+        try:
+            search_results = reddit.subreddit(sub).search(query, sort="top", limit=300, time_filter="year")
+            for submission in search_results:
+                created = datetime.utcfromtimestamp(submission.created_utc)
+                if start_date <= created <= end_date and is_internal_link(submission):
+                    title_lower = submission.title.lower()
+                    if keyword.lower() in title_lower:
+                        posts.append({
+                            "Title": submission.title,
+                            "Score": submission.score,
+                            "Upvote Ratio": submission.upvote_ratio,
+                            "Comments": submission.num_comments,
+                            "Subreddit": submission.subreddit.display_name,
+                            "Permalink": f"https://reddit.com{submission.permalink}",
+                            "Created": created.date()
+                        })
+                if len(posts) >= 100:
+                    break
+        except Exception as e:
+            st.warning(f"Error fetching posts from r/{sub}: {e}")
     return posts
 
 def generate_wordcloud(titles):
@@ -69,9 +74,18 @@ with col1:
 with col2:
     timeframe = st.selectbox("Select timeframe", options=list(time_mapping.keys()))
 
+# === Optional Subreddit Input ===
+sub_input = st.text_input("Optional: Add up to 5 subreddits separated by commas (no r/ prefix)")
+selected_subreddits = [sub.strip() for sub in sub_input.split(",") if sub.strip()]
+
+if len(selected_subreddits) > 5:
+    st.error("You can specify a maximum of 5 subreddits.")
+    selected_subreddits = selected_subreddits[:5]
+
+# === Fetch and Display ===
 if st.button("Fetch Posts") and keyword:
     with st.spinner("Fetching top Reddit posts..."):
-        posts_data = get_reddit_posts(keyword, time_mapping[timeframe])
+        posts_data = get_reddit_posts(keyword, time_mapping[timeframe], selected_subreddits)
         if posts_data:
             df = pd.DataFrame(posts_data)
 
@@ -114,4 +128,4 @@ if st.button("Fetch Posts") and keyword:
             ax.axis("off")
             st.pyplot(fig)
         else:
-            st.warning("No posts found. Try another keyword or time frame.")
+            st.warning("No posts found. Try another keyword, subreddit, or time frame.")
